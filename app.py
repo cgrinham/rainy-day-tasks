@@ -10,7 +10,6 @@ from flask.views import MethodView
 app = Flask(__name__)
 
 
-TASK_QUEUE = multiprocessing.Queue()
 RATE_PER_SECOND = 5
 TASKS = None
 
@@ -100,7 +99,7 @@ class Task:
         self.error = None
         self.parent = parent
         if parent:
-            queue = self.parent_map.get(parent)
+            queue = QUEUE_MAP.get(parent)
             self.host = queue.host
             self.retry_limit = queue.retry_limit
         else:
@@ -112,15 +111,19 @@ class Task:
                 f"{self.request.method}, payload:{bool(self.request.body)},"
                 f" tries: {self.dispatch_count})")
 
+    @property
+    def remaining_tries(self):
+        return 0 if self.retry_limit < 0 else self.retry_limit - self.dispatch_count
+
     def process(self):
         print(f"Triggering {self}")
         self.dispatch_count += 1
         response, error = self.request.make_request(self.host)
         if error:
             self.error = error
-            if self.retry_limit < 0 or self.dispatch_count <= self.retry_limit:
-                return False
-            return True
+            if self.remaining_tries > 0:
+                return True
+            return False
 
         self.response_count += 1
 
@@ -131,6 +134,8 @@ class Task:
         if response.status_code != 200:
             logging.warning(
                 f"Task responded with error {response.status_code}")
+            if self.remaining_tries > 0:
+                return True
             return False
         self.complete_time = datetime.datetime.now()
         return True
@@ -143,6 +148,7 @@ class Task:
             complete = task.process()
             if not complete:
                 delay = delay * 2
+        TASKS[task.name] = task
 
     def dict(self):
         return {
@@ -161,14 +167,14 @@ class Task:
 
 class Index(MethodView):
     def get(self):
-        return render_template("index.html")
+        return render_template('index.html', tasks=TASKS)
 
     def post(self):
         data = request.json
         parent = request.args.get("parent")
         task = Task(data, parent=parent)
         print(f"Task created: {task.name}")
-        TASK_QUEUE[task.name] = task
+        TASKS[task.name] = task
         task_process = multiprocessing.Process(
                 target=Task.trigger, args=(task,))
         task_process.start()

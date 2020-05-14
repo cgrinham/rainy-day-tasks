@@ -1,9 +1,11 @@
 from dataclasses import dataclass
 import uuid
+import json
 import requests
 import datetime
 import logging
 import multiprocessing
+from dateutil.parser import parse
 from flask import Flask, request, render_template, Response
 from flask.views import MethodView
 
@@ -20,9 +22,14 @@ class TaskQueue:
         self.retry_limit = retry_limit
 
 
-QUEUE_MAP = {
-    "projects//locations/europe-west2/queues/hardware-ordering": TaskQueue("http://localhost:8002", 3)
-}
+QUEUE_MAP = {}
+try:
+    with open('hosts.json') as hosts_file:
+        data = json.loads(hosts_file)
+        for parent, taskqueue in data.items():
+            QUEUE_MAP[parent] = TaskQueue(**taskqueue)
+except ValueError:
+    logging.info("hosts.json file not found")
 
 
 class AppEngineRequest:
@@ -32,15 +39,6 @@ class AppEngineRequest:
         self.relative_uri = relative_uri
         self.headers = headers
         self.body = body
-
-    def dict(self):
-        return {
-            "http_method": self.method,
-            "app_engine_routing": self.app_engine_routing,
-            "relative_uri": self.relative_uri,
-            "headers": self.headers,
-            "body": self.body,
-        }
 
     def make_request(self, host):
         try:
@@ -52,7 +50,7 @@ class AppEngineRequest:
                 request_args["data"] = self.body
             if self.headers:
                 request_args["headers"] = self.headers
-            print(f"Making {self.method} request to {self.relative_uri}")
+            logging.info(f"Making {self.method} request to {self.relative_uri}")
             return requests.request(**request_args), None
         except Exception as error:
             logging.exception("There was an error processing the request")
@@ -75,15 +73,21 @@ class Task:
     host: str
     retry_limit: int
 
+    @staticmethod
+    def get_datetime(value):
+        if value:
+            return parse(value)
+        return None
+
+
     def __init__(self, task, parent=None):
         self.name = task.get("name")
         if not self.name:
             self.name = uuid.uuid4()
-        self.schedule_time = task.get("schedule_time")
-        if not self.schedule_time:
-            self.schedule_time = datetime.datetime.now()
-        self.create_time = task.get("create_time", datetime.datetime.now())
-        self.dispatch_deadline = task.get("dispatch_deadline")
+        self.schedule_time = self.get_datetime(
+            task.get("schedule_time")) or datetime.datetime.now()
+        self.create_time = datetime.datetime.now()
+        self.dispatch_deadline = self.get_datetime(task.get("dispatch_deadline"))
 
         # requests made/tries
         self.dispatch_count = task.get("dispatch_count", 0)
@@ -106,17 +110,12 @@ class Task:
             self.retry_limit = 3
             self.host = None
 
-    def __str__(self):
-        return (f"Task({self.name}, {self.request.relative_uri}, "
-                f"{self.request.method}, payload:{bool(self.request.body)},"
-                f" tries: {self.dispatch_count})")
-
     @property
     def remaining_tries(self):
         return 0 if self.retry_limit < 0 else self.retry_limit - self.dispatch_count
 
     def process(self):
-        print(f"Triggering {self}")
+        logging.info(f"Triggering {self}")
         self.dispatch_count += 1
         response, error = self.request.make_request(self.host)
         if error:
@@ -150,20 +149,6 @@ class Task:
                 delay = delay * 2
         TASKS[task.name] = task
 
-    def dict(self):
-        return {
-            "parent": self.parent,
-            "task": {
-                "name": self.name,
-                "schedule_time": self.schedule_time,
-                "create_time": self.create_time,
-                "dispatch_deadline": self.dispatch_deadline,
-                "dispatch_count": self.dispatch_count,
-                "response_count": self.response_count,
-                "app_engine_http_request": self.request.dict(),
-            }
-        }
-
 
 class Index(MethodView):
     def get(self):
@@ -173,7 +158,7 @@ class Index(MethodView):
         data = request.json
         parent = request.args.get("parent")
         task = Task(data, parent=parent)
-        print(f"Task created: {task.name}")
+        logging.info(f"Task created: {task.name}")
         TASKS[task.name] = task
         task_process = multiprocessing.Process(
                 target=Task.trigger, args=(task,))

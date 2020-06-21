@@ -25,7 +25,7 @@ class TaskQueue:
 QUEUE_MAP = {}
 try:
     with open('hosts.json') as hosts_file:
-        data = json.loads(hosts_file)
+        data = json.load(hosts_file)
         for parent, taskqueue in data.items():
             QUEUE_MAP[parent] = TaskQueue(**taskqueue)
 except ValueError:
@@ -78,7 +78,6 @@ class Task:
         if value:
             return parse(value)
         return None
-
 
     def __init__(self, task, parent=None):
         self.name = task.get("name")

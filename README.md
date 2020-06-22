@@ -34,6 +34,8 @@ The server will accept the same payload that you would usually pass to the Cloud
             }
         }
         if payload is not None:
+            if not isinstance(payload, str):
+                payload = json.dumps(payload, cls=DjangoJSONEncoder)
             converted_payload = payload.encode()
             task['app_engine_http_request']['body'] = converted_payload
 
@@ -47,9 +49,19 @@ The server will accept the same payload that you would usually pass to the Cloud
             response = client.create_task(parent, task)
             logging.info('Created task %r', response.name)
         else:
-            print(task)
-            print("Make request to rainy tasks")
-            response = requests.post(f"http://localhost:8500/?parent={parent}", json=task)
-            print(response.status_code)
+            try:
+                logging.info("Create task on local rainy day server")
+                logging.info(task)
+                task['app_engine_http_request']['body'] = payload
+                response = requests.post(
+                    f"http://localhost:8500/?parent={parent}",
+                    json=task)
+            except requests.exceptions.ConnectionError:
+                logging.info("Connection error contacting rainy day server, "
+                             "local server probably not running")
+                response = None
+            else:
+                print(response.status_code)
         return response
+
 

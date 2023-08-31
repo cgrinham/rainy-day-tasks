@@ -10,6 +10,8 @@ from flask import Flask, request, render_template, Response
 from flask.views import MethodView
 
 app = Flask(__name__)
+LOGGER = logging.getLogger('rainy-day')
+LOGGER.setLevel(logging.INFO)
 
 
 RATE_PER_SECOND = 5
@@ -29,7 +31,7 @@ try:
         for parent, taskqueue in data.items():
             QUEUE_MAP[parent] = TaskQueue(**taskqueue)
 except ValueError:
-    logging.info("hosts.json file not found")
+    LOGGER.info("hosts.json file not found")
 
 
 class AppEngineRequest:
@@ -44,17 +46,17 @@ class AppEngineRequest:
         try:
             request_args = {
                 "url": f"{host}{self.relative_uri}",
-                "method": self.method,
+                "method": self.method or "GET",
             }
             if self.body:
                 request_args["data"] = self.body
             if self.headers:
                 request_args["headers"] = self.headers
-            logging.info(f"Making {self.method} request to {self.relative_uri}")
+            LOGGER.info(f"Making {self.method} request to {self.relative_uri}")
             return requests.request(**request_args), None
-        except Exception as error:
-            logging.exception("There was an error processing the request")
-            return None, error
+        except Exception as exception:
+            logging.exception("There was an exception processing the request")
+            return None, exception
 
 
 @dataclass
@@ -72,6 +74,7 @@ class Task:
     parent: str
     host: str
     retry_limit: int
+    uuid: str
 
     @staticmethod
     def get_datetime(value):
@@ -81,8 +84,9 @@ class Task:
 
     def __init__(self, task, parent=None):
         self.name = task.get("name")
+        self.uuid = str(uuid.uuid4())
         if not self.name:
-            self.name = uuid.uuid4()
+            self.name = self.uuid
         self.schedule_time = self.get_datetime(
             task.get("schedule_time")) or datetime.datetime.now()
         self.create_time = datetime.datetime.now()
@@ -114,28 +118,23 @@ class Task:
         return 0 if self.retry_limit < 0 else self.retry_limit - self.dispatch_count
 
     def process(self):
-        logging.info(f"Triggering {self}")
+        LOGGER.warning(f"Triggering {self}")
         self.dispatch_count += 1
-        response, error = self.request.make_request(self.host)
-        if error:
-            self.error = error
-            if self.remaining_tries > 0:
-                return True
-            return False
-
+        response, exception = self.request.make_request(self.host)
+        self.exception = exception
         self.response_count += 1
 
         if not self.first_attempt:
             self.first_attempt = response
         self.last_attempt = response
-
-        if response.status_code != 200:
-            logging.warning(
-                f"Task responded with error {response.status_code}")
-            if self.remaining_tries > 0:
-                return True
-            return False
         self.complete_time = datetime.datetime.now()
+        if exception or not response.ok:
+            if exception:
+                LOGGER.warning(f"Task failed with exception: {exception}")
+            elif not response.ok:
+                LOGGER.warning(f"Task failed with error: {response.status_code}")
+            if self.remaining_tries > 0:
+                return False
         return True
 
     @classmethod
@@ -146,6 +145,7 @@ class Task:
             complete = task.process()
             if not complete:
                 delay = delay * 2
+        LOGGER.info("TASK COMPLETE")
         TASKS[task.name] = task
 
 
@@ -157,7 +157,7 @@ class Index(MethodView):
         data = request.json
         parent = request.args.get("parent")
         task = Task(data, parent=parent)
-        logging.info(f"Task created: {task.name}")
+        LOGGER.info(f"Task created: {task.name}")
         TASKS[task.name] = task
         task_process = multiprocessing.Process(
                 target=Task.trigger, args=(task,))

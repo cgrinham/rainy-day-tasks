@@ -10,24 +10,32 @@
                 <thead>
                     <tr>
                         <th>ID</th>
+                        <th>Name</th>
                         <th>Destination</th>
                         <th>Method</th>
                         <th>Created Time</th>
                         <th>Completed Time</th>
                         <th>Disptach Count</th>
-                        <th>Error</th>
+                        <th>Exception</th>
+                        <th>First Response</th>
+                        <th>Last Response</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for task_name, task in tasks.items() %}
                     <tr>
+                        <td>{{task.uuid}}</td>
                         <td>{{task.name}}</td>
                         <td>{{task.host}}{{task.request.relative_uri}}</td>
                         <td>{{task.request.method}}</td>
                         <td>{{task.create_time}}</td>
                         <td>{{task.complete_time}}</td>
                         <td>{{task.dispatch_count}}</td>
-                        <td>{{task.error}}</td>
+                        <td>{{task.exception}}</td>
+                        <td>{{task.first_attempt.status_code}}<br>
+                            {{task.first_attempt.content}}</td>
+                        <td>{{task.last_attempt.status_code}}<br>
+                            {{task.last_attempt.content}}</td>
                     </tr>
                     {% endfor %}
                 </tbody>
